@@ -168,7 +168,10 @@ try {
                 }
             }
     
-            $appFiles = GetTestToolkitApps -containerName $containerName -includeTestRunnerOnly:$includeTestRunnerOnly -includeTestFrameworkOnly:$includeTestFrameworkOnly -includeTestLibrariesOnly:$includeTestLibrariesOnly -includePerformanceToolkit:$includePerformanceToolkit
+            $appInfoWatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $appFiles = @(GetTestToolkitApps -containerName $containerName -includeTestRunnerOnly:$includeTestRunnerOnly -includeTestFrameworkOnly:$includeTestFrameworkOnly -includeTestLibrariesOnly:$includeTestLibrariesOnly -includePerformanceToolkit:$includePerformanceToolkit | Select-Object -Unique)
+            $appInfoWatch.Stop()
+            Write-Verbose ("Finding test toolkit apps took {0:N2} seconds." -f $appInfoWatch.Elapsed.TotalSeconds)
 
             $publishParams = @{}
             if ($version.Major -ge 18 -and $version.Major -lt 20 -and ($appFiles | Where-Object { $name = [System.IO.Path]::GetFileName($_); ($name -eq "Microsoft_Performance Toolkit.app" -or ($name -like "Microsoft_Performance Toolkit_*.*.*.*.app" -and $name -notlike "*.runtime.app")) })) {
@@ -199,13 +202,15 @@ try {
                     New-Item -Path $applicationsPath -ItemType Directory | Out-Null
                 }
             }
-    
-            $appFiles | ForEach-Object {
+
+            $appInfoWatch.Restart()
+            $appsToImport = @($appFiles | ForEach-Object {
                 $appFile = $_
+                $runtimeAppFile = ''
+                $useRuntimeApp = $false
                 if (!$doNotUseRuntimePackages) {
                     $name = [System.IO.Path]::GetFileName($appFile)
                     $runtimeAppFile = "$applicationsPath\$($name.Replace('.app','.runtime.app'))"
-                    $useRuntimeApp = $false
                     if (Test-Path $runtimeAppFile) {
                         if ((Get-Item $runtimeAppFile).Length -eq 0) {
                             Remove-Item $runtimeAppFile -force
@@ -216,19 +221,56 @@ try {
                         }
                     }
                 }
-    
-                $tenantAppInfo = Invoke-ScriptInBCContainer -containerName $containerName -scriptblock { Param($appFile, $tenant)
-                    $navAppInfo = Get-NAVAppInfo -Path $appFile
-                    (Get-NAVAppInfo -ServerInstance $serverInstance -Name $navAppInfo.Name -Publisher $navAppInfo.Publisher -Version $navAppInfo.Version -tenant $tenant -tenantSpecificProperties)
-                } -argumentList $appFile, $tenant | Where-Object { $_ -isnot [System.String] }
+                [pscustomobject]@{
+                    AppFile = $appFile
+                    RuntimeAppFile = $runtimeAppFile
+                    UseRuntimeApp = $useRuntimeApp
+                }
+            })
 
-                if ($tenantAppInfo) {
-                    if ($tenantAppInfo.IsInstalled) {
+            $appInfos = @()
+            if ($appsToImport.Count -gt 0) {
+                # Read the tenant state once and inspect all packages in the same container invocation.
+                # Keep this after the performance toolkit cleanup, which can unpublish existing apps.
+                $appInfos = @(Invoke-ScriptInBcContainer -containerName $containerName -scriptblock { Param($appsToImport, $tenant)
+                    $publishedApps = @(Get-NAVAppInfo -ServerInstance $serverInstance -Tenant $tenant -TenantSpecificProperties -ErrorAction Stop)
+                    $seenApps = @{}
+                    foreach ($app in $appsToImport) {
+                        $navAppInfo = Get-NAVAppInfo -Path $app.AppFile -ErrorAction Stop
+                        $appKey = "$($navAppInfo.AppId)|$($navAppInfo.Version)"
+                        if ($seenApps.ContainsKey($appKey)) {
+                            continue
+                        }
+                        $seenApps[$appKey] = $true
+                        $tenantAppInfo = $publishedApps | Where-Object { $_.Name -eq $navAppInfo.Name -and $_.Publisher -eq $navAppInfo.Publisher -and $_.Version -eq $navAppInfo.Version }
+                        # Return flat values so both PowerShell remoting and docker exec can serialize them.
+                        [pscustomobject]@{
+                            AppFile = $app.AppFile
+                            RuntimeAppFile = $app.RuntimeAppFile
+                            UseRuntimeApp = $app.UseRuntimeApp
+                            Name = $navAppInfo.Name
+                            Publisher = $navAppInfo.Publisher
+                            Version = "$($navAppInfo.Version)"
+                            IsPublished = [bool]$tenantAppInfo
+                            IsInstalled = [bool]($tenantAppInfo -and $tenantAppInfo.IsInstalled)
+                        }
+                    }
+                } -argumentList $appsToImport, $tenant | Where-Object { $_ -isnot [System.String] })
+            }
+            $appInfoWatch.Stop()
+            Write-Verbose ("Reading metadata and tenant status for {0} test toolkit apps took {1:N2} seconds." -f $appInfos.Count, $appInfoWatch.Elapsed.TotalSeconds)
+
+            foreach ($appInfo in $appInfos) {
+                $appFile = $appInfo.AppFile
+                $runtimeAppFile = $appInfo.RuntimeAppFile
+                $useRuntimeApp = $appInfo.UseRuntimeApp
+                if ($appInfo.IsPublished) {
+                    if ($appInfo.IsInstalled) {
                         Write-Host "Skipping app '$appFile' as it is already installed"
                     }
                     else {
-                        Sync-BcContainerApp -containerName $containerName -tenant $tenant -appName $tenantAppInfo.Name -appPublisher $tenantAppInfo.Publisher -appVersion $tenantAppInfo.Version -Force
-                        Install-BcContainerApp -containerName $containerName -tenant $tenant -appName $tenantAppInfo.Name -appPublisher $tenantAppInfo.Publisher -appVersion $tenantAppInfo.Version -Force
+                        Sync-BcContainerApp -containerName $containerName -tenant $tenant -appName $appInfo.Name -appPublisher $appInfo.Publisher -appVersion $appInfo.Version -Force
+                        Install-BcContainerApp -containerName $containerName -tenant $tenant -appName $appInfo.Name -appPublisher $appInfo.Publisher -appVersion $appInfo.Version -Force
                     }
                 }
                 else {
@@ -241,15 +283,9 @@ try {
                     }
         
                     if (!$doNotUseRuntimePackages -and !$useRuntimeApp) {
-                        Invoke-ScriptInBCContainer -containerName $containerName -scriptblock { Param($appFile, $tenant, $runtimeAppFile)
-                            
-                            $navAppInfo = Get-NAVAppInfo -Path $appFile
-                            $appPublisher = $navAppInfo.Publisher
-                            $appName = $navAppInfo.Name
-                            $appVersion = $navAppInfo.Version
-        
+                        Invoke-ScriptInBcContainer -containerName $containerName -scriptblock { Param($appName, $appPublisher, $appVersion, $tenant, $runtimeAppFile)
                             Get-NavAppRuntimePackage -ServerInstance $serverInstance -Publisher $appPublisher -Name $appName -version $appVersion -Path $runtimeAppFile -Tenant $tenant
-                        } -argumentList $appFile, $tenant, (Get-BcContainerPath -containerName $containerName -path $runtimeAppFile -throw)
+                        } -argumentList $appInfo.Name, $appInfo.Publisher, $appInfo.Version, $tenant, (Get-BcContainerPath -containerName $containerName -path $runtimeAppFile -throw)
                     }
                 }
             }
