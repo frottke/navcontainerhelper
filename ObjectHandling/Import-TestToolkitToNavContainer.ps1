@@ -168,10 +168,7 @@ try {
                 }
             }
     
-            $appInfoWatch = [System.Diagnostics.Stopwatch]::StartNew()
             $appFiles = @(GetTestToolkitApps -containerName $containerName -includeTestRunnerOnly:$includeTestRunnerOnly -includeTestFrameworkOnly:$includeTestFrameworkOnly -includeTestLibrariesOnly:$includeTestLibrariesOnly -includePerformanceToolkit:$includePerformanceToolkit | Select-Object -Unique)
-            $appInfoWatch.Stop()
-            Write-Verbose ("Finding test toolkit apps took {0:N2} seconds." -f $appInfoWatch.Elapsed.TotalSeconds)
 
             $publishParams = @{}
             if ($version.Major -ge 18 -and $version.Major -lt 20 -and ($appFiles | Where-Object { $name = [System.IO.Path]::GetFileName($_); ($name -eq "Microsoft_Performance Toolkit.app" -or ($name -like "Microsoft_Performance Toolkit_*.*.*.*.app" -and $name -notlike "*.runtime.app")) })) {
@@ -203,7 +200,6 @@ try {
                 }
             }
 
-            $appInfoWatch.Restart()
             $appsToImport = @($appFiles | ForEach-Object {
                 $appFile = $_
                 $runtimeAppFile = ''
@@ -257,8 +253,6 @@ try {
                     }
                 } -argumentList $appsToImport, $tenant | Where-Object { $_ -isnot [System.String] })
             }
-            $appInfoWatch.Stop()
-            Write-Verbose ("Reading metadata and tenant status for {0} test toolkit apps took {1:N2} seconds." -f $appInfos.Count, $appInfoWatch.Elapsed.TotalSeconds)
 
             foreach ($appInfo in $appInfos) {
                 $appFile = $appInfo.AppFile
