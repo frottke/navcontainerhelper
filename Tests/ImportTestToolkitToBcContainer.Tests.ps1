@@ -93,8 +93,8 @@ Describe 'Import-TestToolkitToBcContainer batched container lookups' {
 
     It 'uses one tenant query and one metadata invocation when all apps are installed' {
         foreach ($name in @('Permissions Mock', 'Test Runner', 'Library Assert')) {
-            $path = Add-ToolkitPackage -Name $name
-            Add-PublishedPackage -Path $path
+            $appPath = Add-ToolkitPackage -Name $name
+            Add-PublishedPackage -Path $appPath
         }
 
         Import-TestToolkitToBcContainer -containerName 'test'
@@ -163,18 +163,18 @@ Describe 'Import-TestToolkitToBcContainer batched container lookups' {
     }
 
     It 'matches the publisher as well as the name and version' {
-        $path = Add-ToolkitPackage -Name 'Library Assert'
-        Add-PublishedPackage -Path $path
+        $appPath = Add-ToolkitPackage -Name 'Library Assert'
+        Add-PublishedPackage -Path $appPath
         $script:publishedApps[0].Publisher = 'Other Publisher'
 
         Import-TestToolkitToBcContainer -containerName 'test'
 
-        Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$path" }
+        Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$appPath" }
     }
 
     It 'preserves installed status after argument and result serialization' {
-        $path = Add-ToolkitPackage -Name 'Library Assert'
-        Add-PublishedPackage -Path $path
+        $appPath = Add-ToolkitPackage -Name 'Library Assert'
+        Add-PublishedPackage -Path $appPath
         Mock Invoke-ScriptInBcContainer {
             $decodedArguments = [System.Management.Automation.PSSerializer]::Deserialize([System.Management.Automation.PSSerializer]::Serialize($argumentList, 10))
             $result = @(& $scriptblock @decodedArguments)
@@ -185,53 +185,53 @@ Describe 'Import-TestToolkitToBcContainer batched container lookups' {
 
         Should -Invoke Publish-BcContainerApp -Times 0 -Exactly
         Should -Invoke Install-BcContainerApp -Times 0 -Exactly
-        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { $Object -eq "Skipping app '$path' as it is already installed" }
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { $Object -eq "Skipping app '$appPath' as it is already installed" }
     }
 
     It 'uses an existing runtime package and does not regenerate it' {
-        $path = Add-ToolkitPackage -Name 'Library Assert'
-        $runtimePath = Get-TestRuntimePath -Path $path
+        $appPath = Add-ToolkitPackage -Name 'Library Assert'
+        $runtimePath = Get-TestRuntimePath -Path $appPath
         Set-Content -Path $runtimePath -Value 'runtime package fixture'
-        $script:packages[$runtimePath] = $script:packages[$path]
+        $script:packages[$runtimePath] = $script:packages[$appPath]
 
         Import-TestToolkitToBcContainer -containerName 'test' -doNotUseRuntimePackages:$false
 
         Should -Invoke Get-NAVAppInfo -Times 1 -Exactly -ParameterFilter { $Path -eq $runtimePath }
-        Should -Invoke Get-NAVAppInfo -Times 0 -Exactly -ParameterFilter { $Path -eq $path }
+        Should -Invoke Get-NAVAppInfo -Times 0 -Exactly -ParameterFilter { $Path -eq $appPath }
         Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$runtimePath" }
         Should -Invoke Get-NavAppRuntimePackage -Times 0 -Exactly
     }
 
     It 'replaces an empty runtime package and reuses metadata when exporting' {
-        $path = Add-ToolkitPackage -Name 'Library Assert'
-        $runtimePath = Get-TestRuntimePath -Path $path
+        $appPath = Add-ToolkitPackage -Name 'Library Assert'
+        $runtimePath = Get-TestRuntimePath -Path $appPath
         [System.IO.File]::WriteAllBytes($runtimePath, [byte[]]@())
 
         Import-TestToolkitToBcContainer -containerName 'test' -doNotUseRuntimePackages:$false
 
-        Should -Invoke Get-NAVAppInfo -Times 1 -Exactly -ParameterFilter { $Path -eq $path }
-        Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$path" }
+        Should -Invoke Get-NAVAppInfo -Times 1 -Exactly -ParameterFilter { $Path -eq $appPath }
+        Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$appPath" }
         Should -Invoke Get-NavAppRuntimePackage -Times 1 -Exactly -ParameterFilter { $Name -eq 'Library Assert' -and $Publisher -eq 'Microsoft' -and $Version -eq '28.0.0.0' -and $Tenant -eq 'default' -and $Path -eq $runtimePath }
         $runtimePath | Should -Not -Exist
     }
 
     It 'preserves dependency replacement and the development endpoint scope' {
-        $path = Add-ToolkitPackage -Name 'Library Assert'
-        $runtimePath = Get-TestRuntimePath -Path $path
+        $appPath = Add-ToolkitPackage -Name 'Library Assert'
+        $runtimePath = Get-TestRuntimePath -Path $appPath
         Set-Content -Path $runtimePath -Value 'runtime package fixture'
         $replacements = @{ '437dbf0e-84ff-417a-965d-ed2bb9650972' = @{ id = '88b7902e-1655-4e7b-812e-ee9f0667b01b'; name = 'Replacement'; publisher = 'Test'; minversion = '1.0.0.0' } }
 
         Import-TestToolkitToBcContainer -containerName 'test' -doNotUseRuntimePackages:$false -replaceDependencies $replacements -useDevEndpoint
 
-        Should -Invoke Get-NAVAppInfo -Times 1 -Exactly -ParameterFilter { $Path -eq $path }
-        Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$path" -and $useDevEndpoint -and $scope -eq 'tenant' -and $replaceDependencies.ContainsKey('437dbf0e-84ff-417a-965d-ed2bb9650972') }
+        Should -Invoke Get-NAVAppInfo -Times 1 -Exactly -ParameterFilter { $Path -eq $appPath }
+        Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$appPath" -and $useDevEndpoint -and $scope -eq 'tenant' -and $replaceDependencies.ContainsKey('437dbf0e-84ff-417a-965d-ed2bb9650972') }
         Should -Invoke Get-NavAppRuntimePackage -Times 0 -Exactly
     }
 
     It 'queries tenant state after performance toolkit cleanup and preserves publish parameters' {
         $script:containerVersion = '19.0.0.0'
-        $path = Add-ToolkitPackage -Name 'Performance Toolkit' -Version '19.0.0.0'
-        Add-PublishedPackage -Path $path
+        $appPath = Add-ToolkitPackage -Name 'Performance Toolkit' -Version '19.0.0.0'
+        Add-PublishedPackage -Path $appPath
         $script:bcptFixture = Join-Path $TestDrive 'bcpt'
         New-Item -Path $script:bcptFixture -ItemType Directory -Force | Out-Null
         Set-Content -Path (Join-Path $script:bcptFixture 'app.json') -Value '{"id":"7027efad-e349-4b2f-a33e-0d15c746d213","name":"BCPT API","publisher":"Test"}'
@@ -244,7 +244,7 @@ Describe 'Import-TestToolkitToBcContainer batched container lookups' {
         Import-TestToolkitToBcContainer -containerName 'test' -includePerformanceToolkit
 
         ($script:operations | Select-Object -First 2) -join '|' | Should -Be 'Unpublish:Performance Toolkit|Query tenant'
-        Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$path" -and $replacePackageId -and $internalsVisibleTo.id -eq '7027efad-e349-4b2f-a33e-0d15c746d213' }
+        Should -Invoke Publish-BcContainerApp -Times 1 -Exactly -ParameterFilter { $appFile -eq ":$appPath" -and $replacePackageId -and $internalsVisibleTo.id -eq '7027efad-e349-4b2f-a33e-0d15c746d213' }
     }
 
     It 'does not query tenant state when no packages are selected' {
@@ -289,9 +289,9 @@ Describe 'Import-TestToolkitToBcContainer batched container lookups' {
         @{ operation = 'publish' }
     ) {
         param($operation)
-        $path = Add-ToolkitPackage -Name 'Library Assert'
+        $appPath = Add-ToolkitPackage -Name 'Library Assert'
         if ($operation -ne 'publish') {
-            Add-PublishedPackage -Path $path -Installed $false
+            Add-PublishedPackage -Path $appPath -Installed $false
         }
         switch ($operation) {
             'sync' { Mock Sync-BcContainerApp { throw 'Import action failed' } }
